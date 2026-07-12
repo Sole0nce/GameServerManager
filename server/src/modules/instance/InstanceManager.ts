@@ -570,6 +570,11 @@ export class InstanceManager extends EventEmitter {
           if (event === 'terminal-output') {
             this.emit('instance-output', { id, data: data.data })
           } else if (event === 'terminal-exit') {
+            // 防止旧终端会话的退出事件覆盖新会话的状态
+            if (instance.terminalSessionId !== terminalSessionId) {
+              this.logger.info(`忽略旧终端会话退出事件: ${terminalSessionId} (当前: ${instance.terminalSessionId})`)
+              return
+            }
             this.logger.info(`实例 ${instance.name} 终端会话退出`)
             instance.status = 'stopped'
             instance.pid = undefined
@@ -578,6 +583,10 @@ export class InstanceManager extends EventEmitter {
             this.emit('instance-status-changed', { id, status: 'stopped' })
             this.saveInstances()
           } else if (event === 'terminal-error') {
+            if (instance.terminalSessionId !== terminalSessionId) {
+              this.logger.info(`忽略旧终端会话错误事件: ${terminalSessionId} (当前: ${instance.terminalSessionId})`)
+              return
+            }
             this.logger.error(`实例 ${instance.name} 终端错误:`, data.error)
             instance.status = 'error'
             instance.pid = undefined
@@ -619,6 +628,7 @@ export class InstanceManager extends EventEmitter {
         workingDirectory: instance.workingDirectory,
         enableStreamForward: instance.enableStreamForward || false,
         programPath: instance.programPath || '',
+        autoCloseOnForwardExit: instance.enableStreamForward || false,
         terminalUser: instance.terminalUser
       })
       
