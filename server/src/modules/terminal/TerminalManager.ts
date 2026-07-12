@@ -641,16 +641,37 @@ export class TerminalManager {
       this.logger.info(`参数列表: ${JSON.stringify(args)}`)
       
       // 启动目标程序进程
-      const forwardProcess = spawn(executablePath, args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        cwd: session.workingDirectory,
-        env: {
-          ...process.env,
-          TERM: 'xterm-256color',
-          COLORTERM: 'truecolor'
-        },
-        detached: os.platform() !== 'win32' // 在非Windows平台创建独立进程组
-      })
+      // 在Windows上使用PTY包装，避免stdout块缓冲导致输出不实时
+      let forwardProcess: ChildProcess
+      if (os.platform() === 'win32' && this.ptyPath) {
+        const ptyArgs = [
+          '-dir', session.workingDirectory,
+          '-size', '100,30',
+          '-coder', 'UTF-8',
+          '-cmd', JSON.stringify([executablePath, ...args])
+        ]
+        this.logger.info(`使用PTY包装转发进程以避免stdout缓冲: ${this.ptyPath}`)
+        forwardProcess = spawn(this.ptyPath, ptyArgs, {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          cwd: session.workingDirectory,
+          env: {
+            ...process.env,
+            TERM: 'xterm-256color',
+            COLORTERM: 'truecolor'
+          }
+        })
+      } else {
+        forwardProcess = spawn(executablePath, args, {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          cwd: session.workingDirectory,
+          env: {
+            ...process.env,
+            TERM: 'xterm-256color',
+            COLORTERM: 'truecolor'
+          },
+          detached: os.platform() !== 'win32' // 在非Windows平台创建独立进程组
+        })
+      }
       
       session.streamForwardProcess = forwardProcess
       
@@ -728,14 +749,16 @@ export class TerminalManager {
           sessionId: session.id,
           data: exitMessage
         })
-        
-        // 如果配置了自动关闭，且转发进程异常退出，则关闭整个终端会话
-        if (session.autoCloseOnForwardExit && (code !== 0 || signal)) {
+
+        session.streamForwardProcess = undefined
+
+        // 如果配置了自动关闭，则在转发进程退出后关闭终端会话
+        if (session.autoCloseOnForwardExit) {
           session.socket.emit('terminal-output', {
             sessionId: session.id,
-            data: `\r\n[转发进程异常退出，正在关闭终端会话...]\r\n`
+            data: `\r\n[转发进程已退出，正在关闭终端会话...]\r\n`
           })
-          
+
           // 延迟关闭，让用户看到消息
           setTimeout(() => {
             this.closePty(session.socket, { sessionId: session.id })
@@ -749,8 +772,6 @@ export class TerminalManager {
             })
           }
         }
-        
-        session.streamForwardProcess = undefined
       })
       
       // 处理转发进程错误
@@ -805,7 +826,8 @@ export class TerminalManager {
       }
       
       // 如果会话之前断开连接，现在重新连接
-      if (session.disconnected) {
+      // 仅当传入的是真实的Socket.IO socket时才替换（避免虚拟socket覆盖）
+      if (session.disconnected && (socket as any).connected !== undefined) {
         session.disconnected = false
         session.disconnectedAt = undefined
         session.socket = socket
